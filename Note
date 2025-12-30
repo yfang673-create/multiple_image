@@ -1,0 +1,11 @@
+Code and example-image availability (for reviewers)
+
+The script implements the full pipeline used in this work, including image inversion and Gaussian smoothing, Canny edge detection (thresholds 30/100), morphological refinement (dilation/erosion), outer-contour selection, ellipse fitting, and bidirectional Legendre-polynomial fitting (degree 5). For each frame, the program outputs (i) an annotated overlay image (ellipse/Legendre curves and diameter lines) and (ii) an Excel spreadsheet exporting the measured geometric parameters and the derived volume (and density if a pixel-to-length calibration and sample mass are provided).
+
+Minimal steps to reproduce the example outputs:
+1) Clone the repository and install dependencies (Python 3; NumPy, OpenCV, pandas, tqdm).
+2) Set the input and output folders in the main section of the script.
+3) Run:
+   python multiple_image
+
+The full raw experimental dataset can be provided by the corresponding author upon reasonable request, subject to institutional data-sharing policies.
