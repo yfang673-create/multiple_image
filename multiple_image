@@ -1,0 +1,169 @@
+import os
+import cv2
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+
+def process_image(image_path, save_path):
+    image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        print(f"无法读取图片：{image_path}")
+        return None
+
+    inverted_image = cv2.bitwise_not(image)
+    blurred = cv2.GaussianBlur(inverted_image, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+    kernel = np.ones((5, 5), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=2)
+    edges = cv2.erode(edges, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours or len(max(contours, key=cv2.contourArea)) < 5:
+        print(f"轮廓点不足，无法拟合：{image_path}")
+        return None
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    output_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+    # 椭圆拟合
+    ellipse = cv2.fitEllipse(largest_contour)
+    (cx, cy), (major_axis_length, minor_axis_length), angle = ellipse
+    avg_radius_ellipse = (major_axis_length + minor_axis_length) / 4
+    sphere_volume_ellipse = (4 / 3) * np.pi * (avg_radius_ellipse ** 3)
+    cv2.ellipse(output_image, ellipse, (255, 0, 0), 2)
+
+    # 勒让德拟合
+    contour = largest_contour.squeeze()
+    x, y = contour[:, 0], contour[:, 1]
+    model_yx = np.polynomial.legendre.Legendre.fit(x, y, deg=5)
+    model_xy = np.polynomial.legendre.Legendre.fit(y, x, deg=5)
+
+    x_fit = np.linspace(x.min(), x.max(), 500)
+    y_fit = model_yx(x_fit)
+    y_fit_inv = np.linspace(y.min(), y.max(), 500)
+    x_fit_inv = model_xy(y_fit_inv)
+
+    points1 = np.array([x_fit, y_fit]).T.astype(int)
+    points2 = np.array([x_fit_inv, y_fit_inv]).T.astype(int)
+
+    for i in range(len(points1) - 1):
+        cv2.line(output_image, tuple(points1[i]), tuple(points1[i + 1]), (255, 255, 0), 2)
+    for i in range(len(points2) - 1):
+        cv2.line(output_image, tuple(points2[i]), tuple(points2[i + 1]), (255, 255, 0), 2)
+
+    # 勒让德直径计算
+    leftmost = np.min(x_fit)
+    rightmost = np.max(x_fit)
+    idx_left = np.argmin(x_fit)
+    idx_right = np.argmax(x_fit)
+    horiz_legendre = np.hypot(rightmost - leftmost, y_fit[idx_right] - y_fit[idx_left])
+
+    topmost = np.min(y_fit_inv)
+    bottommost = np.max(y_fit_inv)
+    idx_top = np.argmin(y_fit_inv)
+    idx_bottom = np.argmax(y_fit_inv)
+    vert_legendre = np.hypot(x_fit_inv[idx_bottom] - x_fit_inv[idx_top], bottommost - topmost)
+
+    avg_diameter_legendre = (horiz_legendre + vert_legendre) / 2
+    sphere_volume_legendre = (4 / 3) * np.pi * (avg_diameter_legendre / 2) ** 3
+
+    # 标注关键点
+    pt_left = (int(leftmost), int(y_fit[idx_left]))
+    pt_right = (int(rightmost), int(y_fit[idx_right]))
+    pt_top = (int(x_fit_inv[idx_top]), int(topmost))
+    pt_bottom = (int(x_fit_inv[idx_bottom]), int(bottommost))
+
+    points = [pt_left, pt_right, pt_top, pt_bottom]
+    for point in points:
+        cv2.circle(output_image, point, 5, (0, 0, 255), -1)
+
+    # 勒让德拟合直径线（橙色）
+    cv2.line(output_image, pt_left, pt_right, (0, 165, 255), 2)  # 水平直径线
+    cv2.line(output_image, pt_top, pt_bottom, (0, 165, 255), 2)  # 垂直直径线
+
+    # 文字信息
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.7
+    thickness = 2
+
+    text_lines = [
+        (f"Ellipse Major: {major_axis_length:.2f}px", (10, 30), (255, 0, 0)),
+        (f"Ellipse Minor: {minor_axis_length:.2f}px", (10, 60), (255, 0, 0)),
+        (f"Ellipse Volume: {sphere_volume_ellipse:.2f} px^3", (10, 90), (255, 0, 0)),
+        (f"Legendre Horiz: {horiz_legendre:.2f}px", (10, 130), (0, 165, 255)),
+        (f"Legendre Vert: {vert_legendre:.2f}px", (10, 160), (0, 165, 255)),
+        (f"Legendre Volume: {sphere_volume_legendre:.2f} px^3", (10, 190), (0, 165, 255)),
+    ]
+
+    for text, pos, color in text_lines:
+        cv2.putText(output_image, text, pos, font, font_scale, color, thickness)
+
+    # 保存标注图片
+    cv2.imwrite(save_path, output_image)
+
+    return {
+        "椭圆长轴": major_axis_length,
+        "椭圆短轴": minor_axis_length,
+        "椭圆角度": angle,
+        "椭圆体积": sphere_volume_ellipse,
+        "勒让德水平直径": horiz_legendre,
+        "勒让德垂直直径": vert_legendre,
+        "勒让德体积": sphere_volume_legendre
+    }
+
+
+def extract_number_from_filename(filename):
+    try:
+        start = filename.index('_') + 1
+        timestamp = filename[start:start + 17]
+        return timestamp if timestamp.isdigit() else None
+    except ValueError:
+        return None
+
+
+def parse_timestamp(timestamp):
+    if not timestamp or len(timestamp) != 17:
+        return [None] * 7
+    return [int(timestamp[:4]), int(timestamp[4:6]), int(timestamp[6:8]),
+            int(timestamp[8:10]), int(timestamp[10:12]), int(timestamp[12:14]), int(timestamp[14:17])]
+
+
+def process_images_in_folder(input_folder, output_folder, excel_path):
+    os.makedirs(output_folder, exist_ok=True)
+    data = []
+
+    for filename in tqdm(os.listdir(input_folder)):
+        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
+            input_path = os.path.join(input_folder, filename)
+            output_path = os.path.join(output_folder, filename)
+
+            timestamp = extract_number_from_filename(filename)
+            year, month, day, hour, minute, second, millisecond = parse_timestamp(timestamp)
+
+            result = process_image(input_path, output_path)
+            if result:
+                data.append([
+                    filename, timestamp,
+                    result['椭圆长轴'], result['椭圆短轴'], result['椭圆角度'], result['椭圆体积'],
+                    result['勒让德水平直径'], result['勒让德垂直直径'], result['勒让德体积'],
+                    year, month, day, hour, minute, second, millisecond
+                ])
+
+    df = pd.DataFrame(data, columns=[
+        '图片名称', '时间戳',
+        '椭圆长轴', '椭圆短轴', '椭圆角度', '椭圆体积',
+        '勒让德水平直径', '勒让德垂直直径', '勒让德体积',
+        '年', '月', '日', '时', '分', '秒', '毫秒'
+    ])
+    df.to_excel(excel_path, index=False)
+    print(f"处理完成！结果已保存到 {excel_path}")
+
+
+# 示例调用
+input_folder = '/Users/ye/Desktop/aa'  # 输入文件夹路径
+output_folder = '/Users/ye/Desktop/aa2'  # 输出文件夹路径
+excel_path = os.path.join(output_folder, '图片处理结果.xlsx')
+
+process_images_in_folder(input_folder, output_folder, excel_path)
